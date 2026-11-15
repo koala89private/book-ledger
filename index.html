@@ -1109,7 +1109,7 @@ function renderCoverBox() {
   box.innerHTML = `<div class="coverbox">${coverHTML(fake)}
     <div class="stack g2 grow">
       <div class="row">
-        ${store('예스24', `https://www.yes24.com/Product/Search?domain=BOOK&query=${q}`)}
+        ${store('예스24', `https://www.yes24.com/product/search?domain=BOOK&query=${q}`)}
         ${store('교보문고', `https://search.kyobobook.co.kr/search?keyword=${q}`)}
         ${store('알라딘', `https://www.aladin.co.kr/search/wsearchresult.aspx?SearchTarget=Book&SearchWord=${q}`)}
       </div>
@@ -1187,7 +1187,7 @@ const ACT = {
     }
     if (b.status === 'done') b.finishedAt = doneDate;
     if (startDate) b.startedAt = startDate;
-    if (pagesRaw) { b.totalPages = pages; if (b.page > pages) b.page = pages; if (b.page == null || isNew) b.page = Math.round(pages * (b.progress || 0) / 100); if (isNew) b.unit = 'page'; }
+    if (pagesRaw) { const firstTime = !b.totalPages; b.totalPages = pages; if (b.page > pages) b.page = pages; if (b.page == null || isNew || firstTime) b.page = Math.round(pages * (b.progress || 0) / 100); if (isNew || firstTime) b.unit = 'page'; }
     else { delete b.totalPages; delete b.page; if (b.unit === 'page') b.unit = 'pct'; }
     if (U.coverDraft !== undefined) { if (U.coverDraft) b.cover = U.coverDraft; else delete b.cover; }
     else if (b.status === 'want') b.startedAt = '';
