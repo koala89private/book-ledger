@@ -225,7 +225,17 @@ td a.tt:hover{text-decoration:underline}
 .steps{margin:0;padding:0 0 0 20px;display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.65}
 pre.code{margin:0;padding:12px;background:var(--subtle);border:1px solid var(--border);border-radius:var(--r);font-family:var(--mono);font-size:11.5px;line-height:1.6;overflow-x:auto;white-space:pre}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.dates{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.dchip{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 4px 0 10px;border:1px solid var(--bs);border-radius:999px;background:var(--card);font-size:12px;color:var(--fm)}
+.dchip input{border:0;background:transparent;font-family:var(--mono);font-size:12px;color:var(--fg);height:28px;padding:0 6px 0 0;min-width:0}
+.dchip input:focus{outline:none}
+.dchip:focus-within{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+.bhead h1,.bhead .muted,.crumbs span,.bcard .t,.bcard .a,td,.prow .t,.qrow p,.hero p,.hero .src,.qcard .src,.qcard p,.dlg-h h2,.cover b,.empty p{overflow-wrap:anywhere;word-break:break-word}
+.label,.chip{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.chip{max-width:min(240px,100%)}
+.crumbs span:last-child{min-width:0}
 .crumbs{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fm)}
+.crumbs a,.crumbs .subtle{flex:none;white-space:nowrap}
 .crumbs a{text-decoration:none}.crumbs a:hover{text-decoration:underline}
 
 /* dialog */
@@ -292,8 +302,10 @@ create table if not exists public.ledger (
   user_id uuid primary key default auth.uid()
     references auth.users(id) on delete cascade,
   data jsonb not null default '{}'::jsonb,
+  rev bigint not null default 0,
   updated_at timestamptz not null default now()
 );
+alter table public.ledger add column if not exists rev bigint not null default 0;
 
 alter table public.ledger enable row level security;
 
@@ -406,6 +418,55 @@ function merge(a, b) {
   };
 }
 
+/* ---------- 동기화 병합 (3방향) ----------
+   base  = 마지막으로 서버와 맞춘 상태
+   local = 이 기기, remote = 서버
+   항목의 칸(필드)마다: 한쪽만 바꿨으면 그쪽, 둘 다 바꿨으면
+   - 메모·한줄평·문장: 두 내용을 모두 남겨요
+   - 그 밖의 값: 나중에 고친 쪽 */
+const LS_BASE = 'bookledger.base';
+const TEXT_FIELDS = new Set(['memo', 'oneLine', 'text']);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function loadBase() { try { const r = localStorage.getItem(LS_BASE); return r ? normalize(JSON.parse(r)) : null; } catch (e) { return null; } }
+function saveBase(x) { try { localStorage.setItem(LS_BASE, JSON.stringify(x)); } catch (e) {} }
+function clearBase() { try { localStorage.removeItem(LS_BASE); } catch (e) {} }
+function mergeText(l, r) {
+  if (l.includes(r)) return l;
+  if (r.includes(l)) return r;
+  return `${l}\n\n── 다른 기기에서 쓴 내용 ──\n${r}`;
+}
+function merge3Item(l, r, b, conflicts, label) {
+  if (!l) return r; if (!r) return l;
+  const newerR = (r.updatedAt || '') > (l.updatedAt || '');
+  if (!b) return newerR ? Object.assign({}, l, r) : Object.assign({}, r, l);
+  const out = {};
+  for (const k of new Set([...Object.keys(l), ...Object.keys(r)])) {
+    if (k === 'updatedAt') continue;
+    const lc = !same(l[k], b[k]), rc = !same(r[k], b[k]);
+    if (lc && !rc) out[k] = l[k];
+    else if (rc && !lc) out[k] = r[k];
+    else if (!lc && !rc) out[k] = l[k];
+    else if (same(l[k], r[k])) out[k] = l[k];
+    else if (TEXT_FIELDS.has(k) && typeof l[k] === 'string' && typeof r[k] === 'string' && l[k] && r[k]) { out[k] = mergeText(l[k], r[k]); conflicts.push(label); }
+    else out[k] = newerR ? r[k] : l[k];
+  }
+  out.updatedAt = newerR ? r.updatedAt : l.updatedAt;
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  return out;
+}
+function merge3(local, remote, base, conflicts = []) {
+  const col = k => {
+    const L = new Map(local[k].map(x => [x.id, x])), Rm = new Map(remote[k].map(x => [x.id, x]));
+    const B = base ? new Map(base[k].map(x => [x.id, x])) : null;
+    const ids = new Set([...L.keys(), ...Rm.keys()]);
+    return [...ids].map(id => merge3Item(L.get(id), Rm.get(id), B ? B.get(id) : null, conflicts, (L.get(id) || Rm.get(id)).title || (k === 'quotes' ? '문장' : '')));
+  };
+  return {
+    books: col('books'), logs: col('logs'), quotes: col('quotes'),
+    settings: merge3Item(local.settings, remote.settings, base ? base.settings : null, conflicts, '설정')
+  };
+}
+
 /* 진척 기록: 같은 날 같은 책은 한 줄로 합쳐요 */
 function setProgress(b, pct) {
   pct = clamp(Math.round(Number(pct) || 0), 0, 100);
@@ -416,7 +477,8 @@ function setProgress(b, pct) {
   if (ex) { ex.to = pct; touch(ex); if (ex.to === ex.from) { ex.deleted = true; } }
   else S.logs.push({ id: uid(), bookId: b.id, date: today, from, to: pct, updatedAt: now() });
   b.progress = pct; b.lastReadAt = today;
-  if (pct >= 100 && b.status !== 'done') { b.status = 'done'; b.finishedAt = today; }
+  if (pct < 100 && b.status !== 'done') delete b.prevProgress;
+  if (pct >= 100 && b.status !== 'done') { if (from < 100 && typeof b.prevProgress !== 'number') b.prevProgress = from; b.status = 'done'; b.finishedAt = today; }
   else if (pct < 100 && b.status === 'done') { b.status = 'reading'; b.finishedAt = ''; }
   if (pct > 0 && b.status === 'want') { b.status = 'reading'; }
   if (pct > 0 && !b.startedAt) b.startedAt = today;
@@ -579,8 +641,12 @@ function vBook() {
   const eta = etaDays(b);
   const lastLog = logs[0];
   const todayLine = lastLog ? `${lastLog.date === ymd() ? '오늘' : md(lastLog.date)} ${lastLog.to - lastLog.from >= 0 ? '+' : ''}${lastLog.to - lastLog.from}%` : '아직 기록 없음';
-  const dateLine = b.status === 'done' && b.finishedAt ? `완독 ${dot(b.finishedAt)}${b.startedAt ? ` · ${daysBetween(b.startedAt, b.finishedAt) + 1}일 걸림` : ''}`
-    : b.startedAt ? `시작 ${dot(b.startedAt)} · ${daysBetween(b.startedAt, ymd()) + 1}일째` : `추가 ${dot(ld(b.createdAt))}`;
+  const span = b.startedAt ? (b.status === 'done' && b.finishedAt ? `${daysBetween(b.startedAt, b.finishedAt) + 1}일 걸림` : b.status === 'reading' ? `${daysBetween(b.startedAt, ymd()) + 1}일째` : '') : '';
+  const dateLine = `<div class="dates">
+      <label class="dchip"><span>시작</span><input type="date" data-date="startedAt" value="${b.startedAt || ''}" max="${ymd()}" aria-label="읽기 시작한 날"></label>
+      ${b.status === 'done' ? `<label class="dchip"><span>완독</span><input type="date" data-date="finishedAt" value="${b.finishedAt || ''}" max="${ymd()}" aria-label="완독한 날"></label>` : ''}
+      ${span ? `<span class="mono subtle" style="font-size:12px">${span}</span>` : ''}
+    </div>`;
   const sb = (v) => `<button data-act="status" data-v="${v}" aria-pressed="${b.status === v}">${STATUS[v]}</button>`;
   return `
   <div class="crumbs"><a href="#library">서재</a><span class="subtle">/</span><span style="color:var(--fg);font-weight:700">${esc(b.title)}</span></div>
@@ -591,7 +657,7 @@ function vBook() {
         <div style="display:flex;flex-direction:column;gap:6px;min-width:0">
           <h1>${esc(b.title)}</h1>
           <div class="muted" style="font-size:13px">${esc(b.author || '저자 미입력')}</div>
-          <div class="mono subtle" style="font-size:12px">${dateLine}</div>
+          ${dateLine}
           ${(b.tags || []).length ? `<div class="row" style="gap:6px">${b.tags.map(t => `<span class="label">#${esc(t)}</span>`).join('')}</div>` : ''}
           <div class="seg" role="group" aria-label="읽기 상태" style="margin-top:6px;align-self:flex-start">${sb('want')}${sb('reading')}${sb('done')}</div>
           <div class="row" style="gap:4px;margin-top:2px">
@@ -734,6 +800,7 @@ function vQuotes() {
   U.heroId = hero.id;
   const srcIds = [...new Set(qs.map(q => q.bookId || '__me'))];
   const chips = [['all', '전체'], ['fav', '★ 즐겨찾기'], ...srcIds.filter(i => i !== '__me').map(i => [i, getBook(i)?.title || qs.find(q => q.bookId === i)?.bookTitle || '지운 책']), ...(srcIds.includes('__me') ? [['__me', '내 생각']] : [])];
+  if (!chips.some(([v]) => v === U.qFilter)) U.qFilter = 'all';
   let list = qs;
   if (U.qFilter === 'fav') list = list.filter(q => q.fav);
   else if (U.qFilter === '__me') list = list.filter(q => !q.bookId);
@@ -796,7 +863,7 @@ function vSync() {
         <div class="row"><span class="muted" style="width:90px">계정</span><span class="mono">${esc(sbUser.email || '')}</span></div>
         <div class="row"><span class="muted" style="width:90px">마지막 동기화</span><span class="mono">${syncInfo.at ? syncInfo.at.toLocaleString('ko-KR') : '—'}</span></div>
         ${syncInfo.msg ? `<div class="note" style="color:var(--danger)">${esc(syncInfo.msg)}</div>` : ''}
-        <div class="note">기록할 때마다 자동으로 올라가요. 두 기기에서 같은 항목을 고쳤다면 나중에 고친 쪽이 남아요.</div>
+        <div class="note">기록할 때마다 자동으로 올라가요. 두 기기에서 같은 책의 다른 부분을 고치면 둘 다 합쳐지고, 같은 메모를 동시에 고치면 두 내용을 모두 남겨둬요.</div>
         <div class="row"><button class="btn btn-sm" data-act="logout">로그아웃</button>${cfg.fixed ? '' : `<button class="btn btn-sm btn-ghost" data-act="clearCfg">연결 정보 지우기</button>`}</div>
       </div></section>`;
   }
@@ -844,7 +911,11 @@ function renderDlg() {
       <div class="field"><label for="bTitle">제목 *</label><input id="bTitle" class="input" value="${esc(b?.title || '')}" autocomplete="off"></div>
       <div class="field"><label for="bAuthor">저자</label><input id="bAuthor" class="input" value="${esc(b?.author || '')}" autocomplete="off"></div>
       <div class="field"><label for="bStatus">상태</label><select id="bStatus" class="select">${['reading', 'want', 'done'].map(s => `<option value="${s}"${(b?.status || 'reading') === s ? ' selected' : ''}>${STATUS[s]}</option>`).join('')}</select></div>
-      <div class="field"><label for="bDone">완독한 날 <span class="subtle">(상태가 완독일 때만)</span></label><input id="bDone" class="input mono" type="date" max="${ymd()}" value="${b?.finishedAt || ymd()}"></div>
+      <div class="row" style="gap:10px;align-items:flex-start">
+        <div class="field" style="flex:1 1 150px"><label for="bStart">읽기 시작한 날</label><input id="bStart" class="input mono" type="date" max="${ymd()}" value="${b ? (b.startedAt || '') : ymd()}"></div>
+        <div class="field" style="flex:1 1 150px"><label for="bDone">완독한 날 <span class="subtle">(완독일 때)</span></label><input id="bDone" class="input mono" type="date" max="${ymd()}" value="${b?.finishedAt || ymd()}"></div>
+      </div>
+      <div class="note" style="margin-top:-6px">'읽고 싶은' 책은 시작일을 비워둬도 돼요.</div>
       <div class="field"><label for="bTags">태그 (쉼표로 구분)</label><input id="bTags" class="input" placeholder="소설, 고전" value="${esc((b?.tags || []).join(', '))}"></div>
       <button class="btn btn-primary btn-lg" data-act="bookSave">${b ? '저장' : '추가하기'}</button></div>`;
     setTimeout(() => $('#bTitle')?.focus(), 30);
@@ -898,7 +969,7 @@ function addQuote(text, bookId, tag) {
 }
 const ACT = {
   theme() { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); },
-  quick() { openQuick(); },
+  quick() { openQuick('progress'); },
   newQuote() { openQuick('quote'); },
   addBook() { U.editId = null; openDlg('book'); },
   editBook() { U.editId = U.bookId; openDlg('book'); },
@@ -906,7 +977,9 @@ const ACT = {
     const title = $('#bTitle').value.trim(); if (!title) { toast('제목을 입력해 주세요'); $('#bTitle').focus(); return; }
     const tags = $('#bTags').value.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
     const status = $('#bStatus').value, author = $('#bAuthor').value.trim();
-    const doneDate = /^\d{4}-\d{2}-\d{2}$/.test($('#bDone').value) ? $('#bDone').value : ymd();
+    const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(v);
+    const doneDate = isDate($('#bDone').value) ? $('#bDone').value : ymd();
+    const startDate = isDate($('#bStart').value) ? $('#bStart').value : '';
     let b = U.editId ? getBook(U.editId) : null;
     const isNew = !b;
     if (b) { Object.assign(b, { title, author, tags }); if (status !== b.status) applyStatus(b, status); }
@@ -918,6 +991,8 @@ const ACT = {
       else applyStatus(b, status);
     }
     if (b.status === 'done') b.finishedAt = doneDate;
+    if (startDate) b.startedAt = startDate;
+    else if (b.status === 'want') b.startedAt = '';
     touch(b);
     persist(); closeDlg(); U.dlgReturn = null;
     go('book/' + encodeURIComponent(b.id)); toast(isNew ? '책을 추가했어요' : '저장했어요');
@@ -993,7 +1068,7 @@ const ACT = {
   async clearCfg() {
     if (!(await ask('이 기기의 Supabase 연결 정보를 지울까요? 기록은 남아요.', '지우기'))) return;
     try { if (sb) await sb.auth.signOut(); } catch (e) {}
-    try { localStorage.removeItem(LS_CFG); } catch (e) {} sb = null; sbUser = null; setSync('off'); render();
+    try { localStorage.removeItem(LS_CFG); } catch (e) {} clearBase(); sb = null; sbUser = null; setSync('off'); render();
   },
   async sendLink() {
     const email = $('#loginEmail').value.trim();
@@ -1003,14 +1078,31 @@ const ACT = {
     if (error) { syncInfo.msg = '링크를 보내지 못했어요: ' + error.message; render(); return; }
     syncInfo.msg = ''; toast('메일로 로그인 링크를 보냈어요'); render();
   },
-  async logout() { if (sb) await sb.auth.signOut(); sbUser = null; setSync('loggedout'); render(); },
+  async logout() { if (sb) await sb.auth.signOut(); sbUser = null; clearBase(); setSync('loggedout'); render(); },
   syncNow() { syncNow(true); }
 };
+/* 상태 바꾸기: '완독'을 눌렀다가 되돌리면 완독 직전 퍼센트로 돌아가요 */
 function applyStatus(b, s) {
   const today = ymd();
-  if (s === 'done') { if ((b.progress || 0) < 100) setProgress(b, 100); b.status = 'done'; b.finishedAt = b.finishedAt || today; }
-  else if (s === 'reading') { b.status = 'reading'; b.finishedAt = ''; if (!b.startedAt) b.startedAt = today; if ((b.progress || 0) >= 100) b.progress = 95; }
-  else { b.status = 'want'; b.finishedAt = ''; }
+  if (s === b.status) return;
+  if (s === 'done') {
+    if ((b.progress || 0) < 100) { b.prevProgress = b.progress || 0; setProgress(b, 100); }
+    b.status = 'done'; b.finishedAt = b.finishedAt || today;
+    return;
+  }
+  if (b.status === 'done') {
+    let back = typeof b.prevProgress === 'number' ? b.prevProgress : null;
+    if (back === null) {   // 예전 데이터: 100%에 도달한 기록의 시작점으로
+      const fin = live(S.logs).filter(l => l.bookId === b.id && l.to >= 100).sort((x, y) => y.date.localeCompare(x.date))[0];
+      if (fin) back = fin.from;
+    }
+    if (back !== null && back < 100) setProgress(b, back);   // 오늘 생긴 100% 기록도 함께 되돌려요
+    else if ((b.progress || 0) >= 100) b.progress = 0;
+    delete b.prevProgress;
+    b.finishedAt = '';
+  }
+  b.status = s;
+  if (s === 'reading' && !b.startedAt) b.startedAt = today;
 }
 
 document.addEventListener('click', e => {
@@ -1040,9 +1132,24 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.dataset.date && U.view === 'book') {
+    const b = getBook(U.bookId); if (!b) return;
+    const v = /^\d{4}-\d{2}-\d{2}$/.test(t.value) ? t.value : '';
+    if (t.dataset.date === 'finishedAt' && !v) { toast('완독한 날은 비워둘 수 없어요'); render(); return; }
+    b[t.dataset.date] = v; touch(b);
+    if (t.dataset.date === 'finishedAt') {   // 100%에 도달한 기록도 완독일로 옮겨요
+      const fin = live(S.logs).filter(l => l.bookId === b.id && l.to >= 100).sort((x, y) => y.date.localeCompare(x.date))[0];
+      if (fin && fin.date !== v) { fin.date = v; touch(fin); }
+    }
+    persist(); render();
+    if (b.startedAt && b.finishedAt && b.startedAt > b.finishedAt) toast('시작일이 완독일보다 늦어요. 날짜를 확인해 주세요');
+    else toast('날짜를 바꿨어요');
+    return;
+  }
   if (t.id === 'libSort') { U.libSort = t.value; render(); }
   else if (t.id === 'goal' || t.id === 'monthGoal') {
-    const v = Math.round(Number(t.value)); if (!(v > 0)) return;
+    const v = Math.round(Number(t.value)), max = t.id === 'goal' ? 365 : 31;
+    if (!(v >= 1 && v <= max)) { toast(`1에서 ${max} 사이로 넣어주세요`); t.value = S.settings[t.id]; return; }
     S.settings[t.id] = v; S.settings.updatedAt = now(); persist(); render();
   } else if (t.id === 'qSrc') U.quick.src = t.value;
 });
@@ -1057,7 +1164,9 @@ document.addEventListener('keydown', e => {
 $('#importFile').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try {
-    const data = normalize(JSON.parse(await f.text()));
+    const raw = JSON.parse(await f.text());
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.books) || !Array.isArray(raw.quotes)) { toast('책계부 백업 파일이 아니에요. 내보내기로 만든 .json 파일을 골라주세요'); return; }
+    const data = normalize(raw);
     // 백업에 살아 있는 항목은, 이 기기에서 지웠더라도 되살려요
     for (const k of ['books', 'logs', 'quotes']) for (const x of data[k]) {
       const cur = S[k].find(y => y.id === x.id);
@@ -1118,19 +1227,37 @@ async function syncNow(manual) {
   if (syncing) { again = true; return; }
   syncing = true; setSync('syncing');
   try {
-    const r = await sb.from('ledger').select('data').eq('user_id', sbUser.id).maybeSingle();
-    if (r.error) throw r.error;
-    const before = JSON.stringify(S);
-    if (r.data && r.data.data) S = merge(S, normalize(r.data.data));
-    try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {}
-    const w = await sb.from('ledger').upsert({ user_id: sbUser.id, data: S, updated_at: now() });
-    if (w.error) throw w.error;
+    const before = JSON.stringify(S), conflicts = [];
+    let saved = false;
+    for (let attempt = 0; attempt < 5 && !saved; attempt++) {
+      const r = await sb.from('ledger').select('data,rev').eq('user_id', sbUser.id).maybeSingle();
+      if (r.error) throw r.error;
+      if (r.data && r.data.data) S = merge3(S, normalize(r.data.data), loadBase(), conflicts);
+      try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {}
+      const payload = JSON.parse(JSON.stringify(S));
+      if (r.data) {
+        // 내가 읽은 뒤 다른 기기가 먼저 저장했다면(rev가 달라졌다면) 다시 읽어서 합쳐요
+        const rev = Number(r.data.rev) || 0;
+        const w = await sb.from('ledger').update({ data: payload, rev: rev + 1, updated_at: now() }).eq('user_id', sbUser.id).eq('rev', rev).select('rev');
+        if (w.error) throw w.error;
+        saved = !!(w.data && w.data.length);
+      } else {
+        const w = await sb.from('ledger').insert({ user_id: sbUser.id, data: payload, rev: 1 });
+        if (w.error && w.error.code !== '23505') throw w.error;
+        saved = !w.error;
+      }
+      if (saved) saveBase(payload);
+      else await new Promise(res => setTimeout(res, 150 + Math.random() * 350));
+    }
+    if (!saved) throw new Error('다른 기기와 동시에 저장하고 있어요. 잠시 뒤 다시 시도할게요.');
     setSync('ok');
     if (JSON.stringify(S) !== before || U.view === 'sync') render();
-    if (manual === true) toast('동기화했어요');
+    if (conflicts.length) toast(`두 기기에서 같은 글을 고쳐서 둘 다 남겨뒀어요 (${[...new Set(conflicts)].filter(Boolean).slice(0, 2).join(', ')})`);
+    else if (manual === true) toast('동기화했어요');
   } catch (e) {
     const msg = e.message || String(e);
-    setSync('error', /relation|does not exist|schema cache/i.test(msg) ? 'ledger 표가 없어요. SQL을 먼저 실행해 주세요.' : msg);
+    setSync('error', /relation|does not exist|schema cache|column/i.test(msg) ? 'ledger 표가 없거나 예전 구조예요. 동기화 탭의 SQL을 Supabase에서 실행해 주세요.' : msg);
+    if (/동시에 저장/.test(msg)) setTimeout(syncNow, 3000);
     if (U.view === 'sync') render();
   } finally {
     syncing = false;
