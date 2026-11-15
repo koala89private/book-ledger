@@ -370,12 +370,23 @@ function normalize(s) {
 }
 function load() { try { const raw = localStorage.getItem(LS_KEY); if (raw) return normalize(JSON.parse(raw)); } catch (e) {} return blank(); }
 let S = load();
+/* 이전 버전에서 넣은 예시 데이터에도 '예시' 표시를 붙여요 (제목+저자, 문장 내용이 정확히 같을 때만) */
+(function markOldSample() {
+  const SB = { '데미안': '헤르만 헤세', '변신': '프란츠 카프카', '프랑켄슈타인': '메리 셸리', '월든': '헨리 데이비드 소로', '명상록': '마르쿠스 아우렐리우스', '오만과 편견': '제인 오스틴', '위대한 개츠비': 'F. 스콧 피츠제럴드' };
+  const SQ = ['새는 알에서 나오려고', '나는 내 속에서 스스로 솟아나려는', '어느 날 아침 그레고르 잠자가', '나는 신중하게 살고 싶어서', '우리의 삶은 사소한 일들로', '지금 하는 일을 생애 마지막', '외부의 일이 너를 괴롭히는', '퇴근길 지하철에서, 오늘 하루를'];
+  let n = 0; const ids = new Set();
+  for (const b of S.books) if (!b.sample && SB[b.title] === b.author) { b.sample = true; ids.add(b.id); n++; }
+  for (const l of S.logs) if (!l.sample && ids.has(l.bookId)) l.sample = true;
+  for (const q of S.quotes) if (!q.sample && SQ.some(t => (q.text || '').startsWith(t))) { q.sample = true; n++; }
+  if (n) try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) {}
+})();
 function persist() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { toast('저장 공간이 부족해요. 백업을 내려받아 주세요.'); }
   schedulePush();
 }
 const live = a => a.filter(x => !x.deleted);
 const allBooks = () => live(S.books);
+const hasSample = () => [S.books, S.logs, S.quotes].some(a => a.some(x => x.sample && !x.deleted));
 const getBook = id => S.books.find(b => b.id === id && !b.deleted);
 const touch = o => (o.updatedAt = now(), o);
 const bookLogs = id => live(S.logs).filter(l => l.bookId === id).sort((a, b) => (b.date + b.updatedAt).localeCompare(a.date + a.updatedAt));
@@ -479,6 +490,12 @@ function vEmpty() {
     <div class="row" style="justify-content:center"><button class="btn btn-primary" data-act="addBook">${ICON.plus}첫 책 추가</button><button class="btn" data-act="seed">예시 데이터로 둘러보기</button></div>
   </div>`;
 }
+function sampleBanner() {
+  if (!hasSample()) return '';
+  return `<div class="box" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border-color:var(--h2);background:var(--subtle)">
+    <span style="font-size:13px">지금 <b>예시 데이터</b>로 둘러보는 중이에요. 내 기록을 시작하려면 예시만 지워주세요.</span><div class="spacer"></div>
+    <button class="btn btn-sm btn-primary" data-act="clearSample">예시 데이터 지우기</button></div>`;
+}
 function vLibrary() {
   const bs = allBooks();
   if (!bs.length) return vEmpty();
@@ -508,7 +525,7 @@ function vLibrary() {
   const qCount = id => live(S.quotes).filter(x => x.bookId === id).length;
   const seg = (v, t) => `<button data-act="libFilter" data-v="${v}" aria-pressed="${U.libFilter === v}">${t} ${cnt[v]}</button>`;
 
-  return `
+  return `${sampleBanner()}
   <div class="stats">
     ${stat('올해 완독', doneY, `/ ${g}권`, doneY / g * 100, `연간 목표 ${g}권 · 이번 달 ${doneM}권`)}
     ${stat('이번 달 독서일', monthDays, '일', monthDays / mg * 100, `월 목표 ${mg}일`)}
@@ -791,7 +808,7 @@ function vSync() {
     </div></section>
   <section class="box"><div class="box-h"><h2>기타</h2></div>
     <div class="box-b row">
-      <button class="btn" data-act="seed">예시 데이터 넣기</button>
+      ${hasSample() ? '<button class="btn" data-act="clearSample">예시 데이터 지우기</button>' : '<button class="btn" data-act="seed">예시 데이터 넣기</button>'}
       <button class="btn btn-danger" data-act="resetAll">모든 기록 지우기</button>
     </div></section>`;
 }
@@ -931,6 +948,12 @@ const ACT = {
   async seed() {
     if (allBooks().length && !(await ask('예시 책과 문장을 지금 기록에 추가할까요?\n나중에 \'모든 기록 지우기\'로 지울 수 있어요.', '추가'))) return;
     seed(); persist(); go('library'); render(); toast('예시 데이터를 넣었어요');
+  },
+  async clearSample() {
+    if (!(await ask('예시로 넣은 책·기록·문장을 지울까요?\n직접 추가한 기록은 그대로 남아요.', '예시 지우기', true))) return;
+    for (const arr of [S.books, S.logs, S.quotes]) for (const x of arr) if (x.sample && !x.deleted) { x.deleted = true; touch(x); }
+    U.randomQ = null; U.qFilter = 'all';
+    persist(); go('library'); toast('예시 데이터를 지웠어요');
   },
   export() {
     const blob = new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' });
@@ -1122,16 +1145,16 @@ function seed() {
   const day = n => ymd(addDays(today, -n));
   let r = 7; const rnd = () => (r = (r * 9301 + 49297) % 233280) / 233280;
   const mk = (title, author, tags, status, extra) => {
-    const b = Object.assign({ id: uid(), title, author, tags, status, progress: 0, rating: 0, oneLine: '', memo: '', startedAt: '', finishedAt: '', lastReadAt: '', createdAt: now(), updatedAt: now() }, extra);
+    const b = Object.assign({ id: uid(), title, author, tags, status, progress: 0, rating: 0, oneLine: '', memo: '', startedAt: '', finishedAt: '', lastReadAt: '', createdAt: now(), updatedAt: now(), sample: true }, extra);
     S.books.push(b); return b;
   };
   const logRun = (b, startDaysAgo, target, endDaysAgo = 0) => {
     let p = 0, d = startDaysAgo; b.startedAt = day(startDaysAgo);
     while (d >= endDaysAgo && p < target) {
-      if (rnd() < 0.62) { const avg = target / ((startDaysAgo - endDaysAgo + 1) * 0.62); const step = Math.min(target - p, Math.max(1, Math.round(avg * (0.5 + rnd())))); S.logs.push({ id: uid(), bookId: b.id, date: day(d), from: p, to: p + step, updatedAt: now() }); p += step; b.lastReadAt = day(d); }
+      if (rnd() < 0.62) { const avg = target / ((startDaysAgo - endDaysAgo + 1) * 0.62); const step = Math.min(target - p, Math.max(1, Math.round(avg * (0.5 + rnd())))); S.logs.push({ id: uid(), bookId: b.id, date: day(d), from: p, to: p + step, updatedAt: now(), sample: true }); p += step; b.lastReadAt = day(d); }
       d--;
     }
-    if (p < target) { S.logs.push({ id: uid(), bookId: b.id, date: day(endDaysAgo), from: p, to: target, updatedAt: now() }); p = target; b.lastReadAt = day(endDaysAgo); }
+    if (p < target) { S.logs.push({ id: uid(), bookId: b.id, date: day(endDaysAgo), from: p, to: target, updatedAt: now(), sample: true }); p = target; b.lastReadAt = day(endDaysAgo); }
     b.progress = p; if (p >= 100) b.finishedAt = b.lastReadAt;
   };
   const doy = Math.floor((today - new Date(Y, 0, 1)) / 864e5);
@@ -1149,7 +1172,7 @@ function seed() {
   const pride = mk('오만과 편견', '제인 오스틴', ['소설'], 'reading', {});
   logRun(pride, 4, 12, 0);
   mk('위대한 개츠비', 'F. 스콧 피츠제럴드', ['소설'], 'want', {});
-  const q = (text, b, tag, daysAgo, fav) => S.quotes.push({ id: uid(), text, bookId: b ? b.id : null, bookTitle: b ? b.title : '', tag, fav: !!fav, createdAt: addDays(today, -daysAgo).toISOString(), updatedAt: now() });
+  const q = (text, b, tag, daysAgo, fav) => S.quotes.push({ id: uid(), text, bookId: b ? b.id : null, bookTitle: b ? b.title : '', tag, fav: !!fav, createdAt: addDays(today, -daysAgo).toISOString(), updatedAt: now(), sample: true });
   q('새는 알에서 나오려고 투쟁한다. 알은 하나의 세계다. 태어나려는 자는 하나의 세계를 깨뜨려야 한다.', demian, '나', 180, true);
   q('나는 내 속에서 스스로 솟아나려는 것, 바로 그것을 살아보려 했을 뿐이다.', demian, '나', 185);
   q('어느 날 아침 그레고르 잠자가 불안한 꿈에서 깨어났을 때, 그는 자신이 침대 속에서 흉측한 벌레로 변해 있는 것을 발견했다.', kafka, '첫문장', 118);
