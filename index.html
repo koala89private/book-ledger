@@ -365,6 +365,14 @@ dialog.sm{width:min(384px,calc(100vw - 32px))}
   .bhead .cover.lg{width:88px;height:128px}
   .bhead h1{font-size:var(--fs-xl)}
 }
+/* 잠금 화면 */
+body.locked .hdr{display:none}
+.gate{min-height:calc(100dvh - var(--s10) * 2);display:flex;align-items:center;justify-content:center;padding:var(--s4) 0}
+.gate-card{width:100%;max-width:360px}
+.gate-logo{display:flex;align-items:center;gap:var(--s2);font-family:var(--serif);font-size:var(--fs-xl);font-weight:700}
+.gate-logo svg{width:24px;height:24px;stroke:var(--acc)}
+.gate form{display:flex;flex-direction:column;gap:var(--s4)}
+.gate .btn-link{align-self:center}
 #toast{position:fixed;left:50%;bottom:calc(var(--s6) + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(var(--s5));background:var(--ink);color:var(--ink-fg);padding:var(--s3) var(--s4);border-radius:var(--r-md);font-size:var(--fs-md);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:100;max-width:calc(100vw - 32px)}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
@@ -969,40 +977,79 @@ function vQuotes() {
     </article>`).join('')}</div>` : `<p class="t-sm subtle">조건에 맞는 문장이 없어요.</p>`}`;
 }
 
+/* ---------- 잠금 화면: 로그인해야 기록이 보여요 ---------- */
+const AUTH = { ready: false, mode: 'login', recovery: false, changing: false, email: '', msg: '' };
+const locked = () => !sbUser || AUTH.recovery;
+const LOGO = `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5z"/></svg>`;
+function setupSteps() {
+  return `<details class="help"><summary>연결 방법</summary>
+    <ol class="steps">
+      <li><a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a>에서 새 프로젝트 만들기</li>
+      <li><b>SQL Editor</b>에 아래 코드를 붙여넣고 <b>Run</b>
+        <div class="stack g2" style="margin-top:var(--s2)"><pre class="code">${esc(SQL)}</pre><button class="btn btn-sm" data-act="copySql" type="button" style="align-self:flex-start">${ICON.copy}SQL 복사</button></div></li>
+      <li><b>Authentication → URL Configuration</b>의 Site URL에 이 주소 넣기<div class="mono t-sm subtle wrap-any">${esc(location.origin + location.pathname)}</div></li>
+      <li><b>Authentication → Users → Add user</b>에서 내 이메일과 비밀번호로 계정 만들기 (Auto Confirm 체크)</li>
+      <li><b>Authentication → Sign In / Providers</b>에서 <b>Allow new users to sign up</b> 끄기</li>
+      <li>프로젝트 위쪽 <b>Connect</b> 버튼 또는 <b>Settings → API Keys</b>에서 Project URL과 Publishable key 복사</li>
+    </ol></details>`;
+}
+function vGate() {
+  const cfg = getCfg(), em = esc(AUTH.email);
+  let h, body;
+  if (!AUTH.ready) { h = ''; body = `<p class="muted t-sm">불러오는 중…</p>`; }
+  else if (!cfg) {
+    h = '이 기기 연결';
+    body = `<p class="muted t-sm">처음 쓰는 기기예요. Supabase 연결 정보를 넣어주세요.</p>
+      <form data-form="saveCfg" novalidate>
+        <div class="field"><label for="cfgUrl">Project URL</label><input id="cfgUrl" class="input mono" placeholder="https://xxxx.supabase.co" autocomplete="off"></div>
+        <div class="field"><label for="cfgKey">Publishable key</label><input id="cfgKey" class="input mono" placeholder="sb_publishable_…" autocomplete="off"></div>
+        <button class="btn btn-primary btn-lg" type="submit">연결</button>
+      </form>${setupSteps()}`;
+  } else if (AUTH.recovery) {
+    h = '새 비밀번호';
+    body = `<form data-form="setPw" novalidate>
+        <input type="email" autocomplete="username" value="${esc(sbUser?.email || '')}" hidden>
+        <div class="field"><label for="newPw">새 비밀번호 <span class="subtle">(8자 이상)</span></label><input id="newPw" class="input" type="password" autocomplete="new-password" minlength="8"></div>
+        <div class="field"><label for="newPw2">한 번 더</label><input id="newPw2" class="input" type="password" autocomplete="new-password"></div>
+        <button class="btn btn-primary btn-lg" type="submit">저장</button>
+        ${AUTH.changing ? `<button class="btn btn-ghost btn-link" type="button" data-act="cancelPw">취소</button>` : ''}
+      </form>`;
+  } else if (AUTH.mode === 'reset') {
+    h = '비밀번호 재설정';
+    body = `<p class="muted t-sm">가입한 이메일로 비밀번호 설정 링크를 보내드려요.</p>
+      <form data-form="sendReset" novalidate>
+        <div class="field"><label for="loginEmail">이메일</label><input id="loginEmail" class="input" type="email" autocomplete="username" value="${em}"></div>
+        <button class="btn btn-primary btn-lg" type="submit">링크 받기</button>
+        <button class="btn btn-ghost btn-link" type="button" data-act="gateMode" data-v="login">로그인으로</button>
+      </form>`;
+  } else {
+    h = '로그인';
+    body = `<form data-form="login" novalidate>
+        <div class="field"><label for="loginEmail">이메일</label><input id="loginEmail" class="input" type="email" autocomplete="username" value="${em}"></div>
+        <div class="field"><label for="loginPw">비밀번호</label><input id="loginPw" class="input" type="password" autocomplete="current-password"></div>
+        <button class="btn btn-primary btn-lg" type="submit">로그인</button>
+        <button class="btn btn-ghost btn-link" type="button" data-act="gateMode" data-v="reset">비밀번호를 잊었어요</button>
+      </form>
+      ${cfg.fixed ? '' : `<details class="help"><summary>연결 정보</summary><p class="mono t-sm subtle wrap-any">${esc(cfg.url)}</p><button class="btn btn-sm btn-ghost" type="button" data-act="clearCfg">연결 정보 바꾸기</button></details>`}`;
+  }
+  return `<div class="gate"><section class="box gate-card"><div class="box-b stack g4">
+    <div class="gate-logo">${LOGO}<span>책계부</span></div>
+    ${h ? `<h1 class="t-lg">${h}</h1>` : ''}
+    <p class="err-t" id="gateMsg" role="alert"${AUTH.msg ? '' : ' hidden'}>${esc(AUTH.msg)}</p>
+    ${body}
+  </div></section></div>`;
+}
+function gateMsg(t) { AUTH.msg = t || ''; const el = $('#gateMsg'); if (el) { el.textContent = AUTH.msg; el.hidden = !AUTH.msg; } }
+
 function vSync() {
   const cfg = getCfg();
   let top;
-  if (!cfg) {
-    top = `<section class="box"><div class="box-h"><h2>기기 간 동기화</h2><span class="label">선택</span></div>
-      <div class="box-b stack g4">
-        <p class="muted">Supabase를 연결하면 휴대폰과 PC가 같은 기록을 봐요.</p>
-        <details class="help"><summary>연결 방법</summary>
-          <ol class="steps">
-            <li><a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a>에서 새 프로젝트 만들기 (지역: Seoul)</li>
-            <li><b>SQL Editor</b>에 아래 코드를 붙여넣고 <b>Run</b>
-              <div class="stack g2" style="margin-top:var(--s2)"><pre class="code">${esc(SQL)}</pre><button class="btn btn-sm" data-act="copySql" style="align-self:flex-start">${ICON.copy}SQL 복사</button></div></li>
-            <li><b>Authentication → URL Configuration</b>의 Site URL에 이 주소 넣기<div class="mono t-sm subtle wrap-any">${esc(location.origin + location.pathname)}</div></li>
-            <li>프로젝트 위쪽 <b>Connect</b> 버튼 또는 <b>Settings → API Keys</b>에서 Project URL과 Publishable key 복사</li>
-          </ol>
-        </details>
-        <div class="field"><label for="cfgUrl">Project URL</label><input id="cfgUrl" class="input mono" placeholder="https://xxxx.supabase.co" autocomplete="off"></div>
-        <div class="field"><label for="cfgKey">anon / publishable 키</label><input id="cfgKey" class="input mono" placeholder="eyJ… 또는 sb_publishable_…" autocomplete="off"></div>
-        <div><button class="btn btn-primary" data-act="saveCfg">연결</button></div>
-      </div></section>`;
-  } else if (!sbUser) {
-    top = `<section class="box"><div class="box-h"><span class="dot"></span><h2>로그인 필요</h2><div class="spacer"></div>${cfg.fixed ? '' : `<button class="btn btn-sm btn-ghost" data-act="clearCfg">연결 해제</button>`}</div>
-      <div class="box-b stack g4">
-        <p class="muted">이메일로 받은 로그인 링크를 이 기기에서 열어주세요.</p>
-        <div class="row"><label class="sr" for="loginEmail">이메일</label><input id="loginEmail" class="input grow" type="email" autocomplete="email" placeholder="you@example.com" style="flex-basis:240px"><button class="btn btn-primary" data-act="sendLink">로그인 링크 받기</button></div>
-        ${syncInfo.msg ? `<p class="err-t">${esc(syncInfo.msg)}</p>` : ''}
-        <details class="help"><summary>메일이 오지 않을 때</summary><p>스팸함을 확인하세요. 링크가 다른 주소로 열리면 Supabase의 Site URL을 확인하세요.</p></details>
-      </div></section>`;
-  } else {
+  {
     top = `<section class="box"><div class="box-h"><span class="dot ${syncInfo.status === 'error' ? 'err' : syncInfo.status === 'ok' ? 'ok' : 'busy'}"></span><h2>${syncInfo.status === 'error' ? '동기화 오류' : '연결됨'}</h2><div class="spacer"></div><button class="btn btn-sm btn-primary" data-act="syncNow">지금 동기화</button></div>
       <div class="box-b stack g4">
         <dl class="kv"><dt>계정</dt><dd>${esc(sbUser.email || '')}</dd><dt>마지막 동기화</dt><dd>${syncInfo.at ? syncInfo.at.toLocaleString('ko-KR') : '—'}</dd></dl>
         ${syncInfo.msg ? `<p class="err-t">${esc(syncInfo.msg)}</p>` : ''}
-        <div class="row"><button class="btn btn-sm" data-act="logout">로그아웃</button>${cfg.fixed ? '' : `<button class="btn btn-sm btn-ghost" data-act="clearCfg">연결 해제</button>`}</div>
+        <div class="row"><button class="btn btn-sm" data-act="changePw">비밀번호 바꾸기</button><button class="btn btn-sm" data-act="logout">로그아웃</button>${cfg && !cfg.fixed ? `<button class="btn btn-sm btn-ghost" data-act="clearCfg">연결 해제</button>` : ''}</div>
       </div></section>`;
   }
   const g = S.settings.goal || 24, mg = S.settings.monthGoal || 15;
@@ -1031,6 +1078,14 @@ function render() {
   if (composing) { renderLater = true; return; }
   renderLater = false;
   const ae = document.activeElement, keep = ae && ae.id && $('#view').contains(ae) ? { id: ae.id, s: ae.selectionStart, e: ae.selectionEnd } : null;
+  const lk = locked();
+  document.body.classList.toggle('locked', lk);
+  if (lk) {
+    if (typeof dlg !== 'undefined' && dlg.open) dlg.close();
+    $('#view').innerHTML = vGate(); document.title = '책계부'; updateSyncInd();
+    if (keep) { const el = document.getElementById(keep.id); if (el) el.focus({ preventScroll: true }); }
+    return;
+  }
   const tab = U.view === 'book' ? 'library' : U.view;
   document.querySelectorAll('.tab').forEach(t => t.toggleAttribute('aria-current', false) || (t.dataset.tab === tab && t.setAttribute('aria-current', 'page')));
   $('#cBooks').textContent = allBooks().length;
@@ -1327,17 +1382,54 @@ const ACT = {
   async clearCfg() {
     if (!(await ask('이 기기의 Supabase 연결 정보를 지울까요? 기록은 남아요.', '지우기'))) return;
     try { if (sb) await sb.auth.signOut(); } catch (e) {}
-    try { localStorage.removeItem(LS_CFG); } catch (e) {} clearBase(); sb = null; sbUser = null; setSync('off'); render();
+    try { localStorage.removeItem(LS_CFG); } catch (e) {} clearBase(); sb = null; sbUser = null; AUTH.msg = ''; setSync('off'); render();
   },
-  async sendLink() {
-    const email = $('#loginEmail').value.trim();
-    if (!/^\S+@\S+\.\S+$/.test(email)) { toast('이메일을 확인해 주세요'); return; }
+  gateMode(v) { AUTH.email = $('#loginEmail')?.value.trim() || AUTH.email; AUTH.mode = v === 'reset' ? 'reset' : 'login'; AUTH.msg = ''; render(); $('#loginEmail')?.focus(); },
+  async login() {
+    const email = $('#loginEmail').value.trim(), password = $('#loginPw').value;
+    AUTH.email = email;
+    if (!/^\S+@\S+\.\S+$/.test(email)) return gateMsg('이메일을 확인해 주세요');
+    if (!password) return gateMsg('비밀번호를 넣어주세요');
+    if (!sb) { await sbInit(); if (!sb) return gateMsg(AUTH.msg || 'Supabase에 연결하지 못했어요'); }
+    const btn = $('form[data-form=login] [type=submit]'); if (btn) btn.disabled = true;
+    let res; try { res = await sb.auth.signInWithPassword({ email, password }); } catch (e) { res = { error: e }; }
+    if (btn) btn.disabled = false;
+    if (res.error) {
+      const m = String(res.error.message || '');
+      return gateMsg(/invalid login credentials/i.test(m) ? '이메일이나 비밀번호가 맞지 않아요' : /not confirmed/i.test(m) ? '이메일 인증이 아직 안 됐어요' : '로그인하지 못했어요: ' + m);
+    }
+    AUTH.msg = '';
+    if (!sbUser && res.data?.user) { sbUser = res.data.user; syncNow(); }
+    render();
+  },
+  async sendReset() {
+    const email = $('#loginEmail').value.trim(); AUTH.email = email;
+    if (!/^\S+@\S+\.\S+$/.test(email)) return gateMsg('이메일을 확인해 주세요');
     if (!sb) { await sbInit(); if (!sb) return; }
-    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
-    if (error) { syncInfo.msg = '링크를 보내지 못했어요: ' + error.message; render(); return; }
-    syncInfo.msg = ''; toast('메일로 로그인 링크를 보냈어요'); render();
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    if (error) return gateMsg('메일을 보내지 못했어요: ' + error.message);
+    AUTH.mode = 'login'; AUTH.msg = ''; render(); toast('메일로 비밀번호 설정 링크를 보냈어요');
   },
-  async logout() { if (sb) await sb.auth.signOut(); sbUser = null; clearBase(); setSync('loggedout'); render(); },
+  async setPw() {
+    const p1 = $('#newPw').value, p2 = $('#newPw2').value;
+    if (p1.length < 8) return gateMsg('8자 이상으로 정해주세요');
+    if (p1 !== p2) return gateMsg('두 비밀번호가 달라요');
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    if (error) return gateMsg('저장하지 못했어요: ' + error.message);
+    AUTH.recovery = false; AUTH.changing = false; AUTH.msg = ''; render(); toast('비밀번호를 저장했어요');
+  },
+  changePw() { AUTH.recovery = true; AUTH.changing = true; AUTH.msg = ''; render(); $('#newPw')?.focus(); },
+  cancelPw() { AUTH.recovery = false; AUTH.changing = false; AUTH.msg = ''; render(); },
+  async logout() {
+    if (!(await ask('로그아웃할까요? 이 기기에 저장된 기록도 지워요. 서버 기록은 그대로 남아요.', '로그아웃'))) return;
+    while (syncing) await new Promise(r => setTimeout(r, 50));
+    clearTimeout(pushTimer); await syncNow();
+    if (syncInfo.status !== 'ok' && !(await ask('아직 서버에 올리지 못한 기록이 있어요. 그래도 로그아웃할까요? 올리지 못한 기록은 사라져요.', '로그아웃', true))) return;
+    try { if (sb) await sb.auth.signOut(); } catch (e) {}
+    sbUser = null; S = blank(); try { localStorage.removeItem(LS_KEY); } catch (e) {} clearBase();
+    AUTH.mode = 'login'; AUTH.recovery = false; AUTH.changing = false; U.view = 'library';
+    setSync('loggedout'); render();
+  },
   syncNow() { syncNow(true); }
 };
 /* 상태 바꾸기: '완독'을 눌렀다가 되돌리면 완독 직전 퍼센트로 돌아가요 */
@@ -1373,11 +1465,16 @@ document.addEventListener('click', e => {
   if (t.dataset.act === 'addBook' && U.dlg === 'quick') U.dlgReturn = 'quick';
   fn(t.dataset.v, t);
 });
+document.addEventListener('submit', e => {
+  const f = e.target.dataset && e.target.dataset.form; if (!f) return;
+  e.preventDefault(); if (ACT[f]) ACT[f]();
+});
 let fieldTimer = null;
 document.addEventListener('compositionstart', () => { composing = true; });
 document.addEventListener('compositionend', e => { composing = false; e.target.dispatchEvent(new Event('input', { bubbles: true })); if (renderLater) render(); });
 document.addEventListener('input', e => {
   const t = e.target;
+  if (t.id === 'loginEmail') AUTH.email = t.value;
   if (t.dataset.field && U.view === 'book') {
     const b = getBook(U.bookId); if (!b) return;
     b[t.dataset.field] = t.value; touch(b);
@@ -1421,7 +1518,6 @@ document.addEventListener('keydown', e => {
     else if (e.target.id === 'pageIn' || e.target.id === 'totalIn') { e.preventDefault(); ACT.setPage(); }
     else if (e.target.id === 'qPage') { e.preventDefault(); ACT.qSave(); }
     else if (e.target.id === 'qPct') { e.preventDefault(); ACT.qSave(); }
-    else if (e.target.id === 'loginEmail') { e.preventDefault(); ACT.sendLink(); }
     else if (['bTitle', 'bAuthor', 'bTags', 'bPages'].includes(e.target.id)) { e.preventDefault(); ACT.bookSave(); }
     else if (e.target.id === 'coverUrl') { e.preventDefault(); ACT.coverUrl(); }
   }
@@ -1477,21 +1573,26 @@ function updateSyncInd() {
 }
 function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('라이브러리를 불러오지 못했어요')); document.head.appendChild(s); }); }
 async function sbInit() {
-  const c = getCfg(); if (!c) { setSync('off'); return; }
+  const c = getCfg(); if (!c) { setSync('off'); AUTH.ready = true; render(); return; }
   if (sb && sb.__url === c.url) { if (sbUser) syncNow(); return; }
   try {
     if (!window.supabase) await loadScript(SB_CDN);
     sb = window.supabase.createClient(c.url, c.key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit' } });
     sb.__url = c.url;
+    const isRecovery = /type=recovery/.test(location.hash);
     const { data } = await sb.auth.getSession();
     sbUser = data.session?.user || null;
+    if (isRecovery && sbUser) AUTH.recovery = true;
     if (/access_token|error_description/.test(location.hash)) { try { history.replaceState(null, '', location.pathname + location.search + '#library'); } catch (e) {} route('library'); }
     sb.auth.onAuthStateChange((ev, ses) => {
+      if (ev === 'PASSWORD_RECOVERY') { AUTH.recovery = true; }
       const was = sbUser; sbUser = ses?.user || null;
+      if (ev === 'PASSWORD_RECOVERY') render();
       if (sbUser && !was) { syncNow(); render(); } else if (!sbUser && was) { setSync('loggedout'); render(); }
     });
+    AUTH.ready = true; render();
     if (sbUser) await syncNow(); else setSync('loggedout');
-  } catch (e) { sb = null; setSync('error', 'Supabase 연결 실패: ' + e.message); }
+  } catch (e) { sb = null; AUTH.ready = true; AUTH.msg = 'Supabase에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.'; setSync('error', 'Supabase 연결 실패: ' + e.message); render(); }
 }
 function schedulePush() {
   if (!sb || !sbUser) return;
