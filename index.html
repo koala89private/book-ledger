@@ -877,7 +877,7 @@ function vProgress() {
   <div class="cols">
     <section class="box col x2" style="gap:0">
       <div class="box-h"><h2>월별 독서일</h2><div class="spacer"></div>
-        <label class="t-sm muted" for="monthGoal">목표</label><input id="monthGoal" class="input input-sm mono w-xs" type="number" min="1" max="31" value="${mg}"><span class="t-sm muted">일</span></div>
+        <a class="t-sm muted" href="#settings">목표 ${mg}일</a></div>
       <div class="box-b" style="padding-top:var(--s6)">
         <div class="mchart" style="height:${H + 32}px">
           <div class="goal" style="bottom:${Math.round(mg / maxV * H)}px"><span>${mg}일</span></div>
@@ -888,7 +888,7 @@ function vProgress() {
     </section>
     <section class="box col x1" style="gap:0">
       <div class="box-h"><h2>연간 목표</h2><div class="spacer"></div>
-        <label class="t-sm muted" for="goal">목표</label><input id="goal" class="input input-sm mono w-xs" type="number" min="1" max="365" value="${g}"><span class="t-sm muted">권</span></div>
+        <a class="t-sm muted" href="#settings">목표 ${g}권</a></div>
       <div class="box-b stack">
         <div class="row base"><span class="num">${doneY.length}</span><span class="mono muted">/ ${g}권</span></div>
         <div class="goalgrid">${goalCells}</div>
@@ -982,7 +982,18 @@ function vSync() {
         <div class="row"><button class="btn btn-sm" data-act="logout">로그아웃</button>${cfg.fixed ? '' : `<button class="btn btn-sm btn-ghost" data-act="clearCfg">연결 해제</button>`}</div>
       </div></section>`;
   }
-  return `<div class="page-h"><h1>설정</h1></div>${top}
+  const g = S.settings.goal || 24, mg = S.settings.monthGoal || 15;
+  return `<div class="page-h"><h1>설정</h1></div>
+  <section class="box"><div class="box-h"><h2>목표</h2></div>
+    <div class="box-b stack g4">
+      <div class="field"><label for="goal">연간 완독 목표</label>
+        <div class="row nowrap"><input id="goal" class="input mono w-num" type="number" inputmode="numeric" min="1" max="365" value="${g}"><span class="muted">권</span></div>
+        <span class="t-xs subtle">완독일이 올해인 책 수로 세요.</span></div>
+      <div class="field"><label for="monthGoal">월 독서일 목표</label>
+        <div class="row nowrap"><input id="monthGoal" class="input mono w-num" type="number" inputmode="numeric" min="1" max="31" value="${mg}"><span class="muted">일</span></div>
+        <span class="t-xs subtle">진척을 기록한 날 수로 세요.</span></div>
+    </div></section>
+  ${top}
   <section class="box"><div class="box-h"><h2>백업</h2></div>
     <div class="box-b row"><button class="btn" data-act="export">내보내기 (.json)</button><button class="btn" data-act="import">가져오기</button></div></section>
   <section class="box"><div class="box-h"><h2>데이터</h2></div>
@@ -1377,7 +1388,7 @@ document.addEventListener('change', e => {
   else if (t.id === 'goal' || t.id === 'monthGoal') {
     const v = Math.round(Number(t.value)), max = t.id === 'goal' ? 365 : 31;
     if (!(v >= 1 && v <= max)) { toast(`1에서 ${max} 사이로 넣어주세요`); t.value = S.settings[t.id]; return; }
-    S.settings[t.id] = v; S.settings.updatedAt = now(); persist(); render();
+    S.settings[t.id] = v; S.settings.updatedAt = now(); persist(); render(); toast('목표를 바꿨어요');
   } else if (t.id === 'qSrc') U.quick.src = t.value;
 });
 document.addEventListener('keydown', e => {
